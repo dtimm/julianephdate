@@ -55,36 +55,148 @@ func Date(t time.Time) float64 {
 	return jed
 }
 
+// leapSecondEntry holds a date and the total (TAI - UTC) in effect
+// starting right at that instant.
+type leapSecondEntry struct {
+	effectiveUTC time.Time
+	taiMinusUTC  int // in whole seconds
+}
+
+// Full table of TAI−UTC from 1972 through the last announced leap second.
+// The date/time here is the instant *after* the leap second occurs, i.e.,
+// "YYYY-MM-DD 00:00:00 UTC" on the day it first takes effect (except for
+// 1972-01-01 which is the moment leap seconds began).
+var leapSecondsTable = []leapSecondEntry{
+	// The first leap-second adjustment took effect on 1972-01-01, at which
+	// time TAI was already 10s ahead of UTC:
+	{time.Date(1972, time.January, 1, 0, 0, 0, 0, time.UTC), 10},
+
+	// 1972-07-01 => TAI−UTC = 11
+	{time.Date(1972, time.July, 1, 0, 0, 0, 0, time.UTC), 11},
+
+	// 1973-01-01 => 12
+	{time.Date(1973, time.January, 1, 0, 0, 0, 0, time.UTC), 12},
+
+	// 1974-01-01 => 13
+	{time.Date(1974, time.January, 1, 0, 0, 0, 0, time.UTC), 13},
+
+	// 1975-01-01 => 14
+	{time.Date(1975, time.January, 1, 0, 0, 0, 0, time.UTC), 14},
+
+	// 1976-01-01 => 15
+	{time.Date(1976, time.January, 1, 0, 0, 0, 0, time.UTC), 15},
+
+	// 1977-01-01 => 16
+	{time.Date(1977, time.January, 1, 0, 0, 0, 0, time.UTC), 16},
+
+	// 1978-01-01 => 17
+	{time.Date(1978, time.January, 1, 0, 0, 0, 0, time.UTC), 17},
+
+	// 1979-01-01 => 18
+	{time.Date(1979, time.January, 1, 0, 0, 0, 0, time.UTC), 18},
+
+	// 1980-01-01 => 19
+	{time.Date(1980, time.January, 1, 0, 0, 0, 0, time.UTC), 19},
+
+	// 1981-07-01 => 20
+	{time.Date(1981, time.July, 1, 0, 0, 0, 0, time.UTC), 20},
+
+	// 1982-07-01 => 21
+	{time.Date(1982, time.July, 1, 0, 0, 0, 0, time.UTC), 21},
+
+	// 1983-07-01 => 22
+	{time.Date(1983, time.July, 1, 0, 0, 0, 0, time.UTC), 22},
+
+	// 1985-07-01 => 23
+	{time.Date(1985, time.July, 1, 0, 0, 0, 0, time.UTC), 23},
+
+	// 1988-01-01 => 24
+	{time.Date(1988, time.January, 1, 0, 0, 0, 0, time.UTC), 24},
+
+	// 1990-01-01 => 25
+	{time.Date(1990, time.January, 1, 0, 0, 0, 0, time.UTC), 25},
+
+	// 1991-01-01 => 26
+	{time.Date(1991, time.January, 1, 0, 0, 0, 0, time.UTC), 26},
+
+	// 1992-07-01 => 27
+	{time.Date(1992, time.July, 1, 0, 0, 0, 0, time.UTC), 27},
+
+	// 1993-07-01 => 28
+	{time.Date(1993, time.July, 1, 0, 0, 0, 0, time.UTC), 28},
+
+	// 1994-07-01 => 29
+	{time.Date(1994, time.July, 1, 0, 0, 0, 0, time.UTC), 29},
+
+	// 1996-01-01 => 30
+	{time.Date(1996, time.January, 1, 0, 0, 0, 0, time.UTC), 30},
+
+	// 1997-07-01 => 31
+	{time.Date(1997, time.July, 1, 0, 0, 0, 0, time.UTC), 31},
+
+	// 1999-01-01 => 32
+	{time.Date(1999, time.January, 1, 0, 0, 0, 0, time.UTC), 32},
+
+	// 2006-01-01 => 33
+	{time.Date(2006, time.January, 1, 0, 0, 0, 0, time.UTC), 33},
+
+	// 2009-01-01 => 34
+	{time.Date(2009, time.January, 1, 0, 0, 0, 0, time.UTC), 34},
+
+	// 2012-07-01 => 35
+	{time.Date(2012, time.July, 1, 0, 0, 0, 0, time.UTC), 35},
+
+	// 2015-07-01 => 36
+	{time.Date(2015, time.July, 1, 0, 0, 0, 0, time.UTC), 36},
+
+	// 2017-01-01 => 37
+	{time.Date(2017, time.January, 1, 0, 0, 0, 0, time.UTC), 37},
+}
+
+// leapsAtUTC returns TAI-UTC (in whole seconds) at the given UTC time.
+func taiMinusUTCAt(t time.Time) int {
+	// Find the largest entry in leapSecondsTable whose effectiveUTC <= t
+	// The table is in chronological order.
+	out := 0
+	for _, entry := range leapSecondsTable {
+		if !t.Before(entry.effectiveUTC) {
+			out = entry.taiMinusUTC
+		} else {
+			break
+		}
+	}
+	return out
+}
+
+// StdTime approximates the UTC time for a given Julian Ephemeris Date (TT).
+// We do a small iteration: first guess, then correct leaps, etc.
 func StdTime(jed float64) time.Time {
-	// 1. Subtract the offset between UTC and TT from JED
-	//    to get the Julian Date (JD) in UTC.
-	//
-	//    TT = UTC + leapSeconds + 32.184 seconds
-	//    => JD(UTC) = JED - (leapSeconds + 32.184)/86400
-	leapSeconds := 37.0                 // Hardcoded leap seconds (as of now)
-	ttOffsetSec := 32.184 + leapSeconds // in seconds
-	jdUTC := jed - ttOffsetSec/86400.0
+	// 1) Make an initial guess by using the *latest known* TAI - UTC from the table.
+	last := leapSecondsTable[len(leapSecondsTable)-1]
+	guessTAIminusUTC := last.taiMinusUTC
+	// TT - UTC = (TAI - UTC) + 32.184
+	// => JD(UTC) = JED - ( (TAI-UTC) + 32.184 ) / 86400
+	jdUTCguess := jed - (float64(guessTAIminusUTC)+32.184)/86400.0
+	guessTime := jdToCalendarTime(jdUTCguess)
 
-	// 2. Convert JD(UTC) to a calendar date/time in UTC.
-	//    We'll use a standard algorithm that works for JD >= 0.
-	//    If you need to handle negative JDs (dates before 4713 BCE),
-	//    additional caution is required.
+	// 2) Now see what TAI - UTC actually was at guessTime. Then recalc.
+	correctTAIminusUTC := taiMinusUTCAt(guessTime)
+	jdUTCCorrect := jed - (float64(correctTAIminusUTC)+32.184)/86400.0
 
-	// Use the common "JD -> Gregorian" algorithm:
-	//   a) Shift by 0.5 so day starts at midnight
-	//   b) Split integer and fractional part
-	//   c) Convert integer part to year, month, day
-	//   d) Convert fractional part to hour, minute, second
-	//
-	// NOTE: The formula changes slightly if JD < 2299160.5 (Julian vs. Gregorian),
-	// but for modern epochs, we can safely assume Gregorian.
+	// 3) Convert that corrected JD(UTC) to a time.Time
+	// (For many cases, a single correction step is enough. If you want
+	//  super-precise alignment around leap-second boundaries, you could
+	//  iterate again until stable.)
+	return jdToCalendarTime(jdUTCCorrect)
+}
 
-	// Shift by 0.5 to align day boundaries
+// jdToCalendarTime converts JD in UTC to a Go time.Time in UTC
+// using a standard Gregorian formula (valid for JD > 2299160.5).
+func jdToCalendarTime(jdUTC float64) time.Time {
+	// Shift by 0.5 so day boundaries align at midnight
 	z := math.Floor(jdUTC + 0.5)
-	f := (jdUTC + 0.5) - z // fractional part
+	f := (jdUTC + 0.5) - z
 
-	// Depending on historical date, you may need to handle the Julian calendar.
-	// We'll assume everything is post-Gregorian reform for simplicity.
 	alpha := math.Floor((z - 1867216.25) / 36524.25)
 	a := z + 1 + alpha - math.Floor(alpha/4)
 	b := a + 1524
@@ -92,12 +204,10 @@ func StdTime(jed float64) time.Time {
 	d := math.Floor(365.25 * c)
 	e := math.Floor((b - d) / 30.6001)
 
-	// Extract integer day
 	dayFloat := b - d - math.Floor(30.6001*e) + f
 	dayInt := math.Floor(dayFloat)
-	dayFrac := dayFloat - dayInt
+	fracDay := dayFloat - dayInt
 
-	// Derive month and year
 	var month, year float64
 	if e < 14 {
 		month = e - 1
@@ -111,9 +221,8 @@ func StdTime(jed float64) time.Time {
 		year = c - 4715
 	}
 
-	// 3. Convert the fractional day into hours, minutes, seconds
-	fracDays := dayFrac
-	hours := fracDays * 24.0
+	// Break down fracDay into H:M:S
+	hours := fracDay * 24.0
 	hourInt := math.Floor(hours)
 	fracHours := hours - hourInt
 
@@ -125,13 +234,8 @@ func StdTime(jed float64) time.Time {
 	secInt := math.Floor(seconds)
 	fracSeconds := seconds - secInt
 
-	// Convert fractional seconds into nanoseconds
-	nanoSeconds := math.Round(fracSeconds * 1e9)
+	nano := math.Round(fracSeconds * 1e9)
 
-	// 4. Construct a Go time.Time in UTC.
-	//    We have year, month, day, hour, minute, second, nanosecond.
-	//    Note that Go's time.Month is 1-based (January=1, etc.).
-	//    We'll clamp the nanoSeconds to avoid floating rounding issues.
 	return time.Date(
 		int(year),
 		time.Month(int(month)),
@@ -139,7 +243,7 @@ func StdTime(jed float64) time.Time {
 		int(hourInt),
 		int(minInt),
 		int(secInt),
-		int(nanoSeconds),
+		int(nano),
 		time.UTC,
 	)
 }
